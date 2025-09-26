@@ -54,26 +54,31 @@ export default function useFastingTimer() {
       } catch {}
       notifIdRef.current = null;
     }
-    try {
-      const id = await Notifications.scheduleNotificationAsync({
-        content: {
-          title: "Fast complete 🎉",
-          body: "Time to re-fuel mindfully.",
-        },
-        trigger: dayjs(endIso).toDate(),
-      });
-      notifIdRef.current = id;
-    } catch {}
+    // Only schedule if end is still in the future
+    if (dayjs(endIso).isAfter(dayjs())) {
+      try {
+        const id = await Notifications.scheduleNotificationAsync({
+          content: {
+            title: "Fast complete 🎉",
+            body: "Time to re-fuel mindfully.",
+          },
+          trigger: dayjs(endIso).toDate(),
+        });
+        notifIdRef.current = id;
+      } catch {}
+    }
   }, []);
 
   const startFast = useCallback(
-    async (hours = 16) => {
-      const start = dayjs();
+    async (hours = 16, startIso = dayjs().toISOString()) => {
+      const start = dayjs(startIso);
       const end = start.add(hours, "hour");
+
       setIsFasting(true);
       setStartTime(start.toISOString());
       setEndTime(end.toISOString());
       setDurationHours(hours);
+
       await scheduleEndNotification(end.toISOString());
     },
     [scheduleEndNotification]
