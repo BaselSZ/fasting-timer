@@ -1,5 +1,5 @@
 // File: App.js
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 import {
   SafeAreaView,
   View,
@@ -16,9 +16,8 @@ import useFastingTimer from "./hooks/useFastingTimer";
 import TimerCard from "./components/TimerCard";
 import ModePicker from "./components/ModePicker";
 import StartTimePicker from "./components/StartTimePicker";
-// If you still use PresetPicker, you can keep it imported, but it's not required here.
-// import PresetPicker from './components/PresetPicker';
 
+// Notifications handler
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
@@ -27,34 +26,89 @@ Notifications.setNotificationHandler({
   }),
 });
 
+/** ⏱ Keep the once-per-second ticker isolated here so the picker screen doesn't re-render every second */
+function TimerSection({ startTime, endTime, onEndFast }) {
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const now = dayjs();
+  const remainingMs = endTime ? Math.max(0, dayjs(endTime).diff(now)) : 0;
+  const elapsedMs = startTime ? Math.max(0, now.diff(dayjs(startTime))) : 0;
+
+  const fmt = (ms) => {
+    const totalSec = Math.floor(ms / 1000);
+    const h = Math.floor(totalSec / 3600)
+      .toString()
+      .padStart(2, "0");
+    const m = Math.floor((totalSec % 3600) / 60)
+      .toString()
+      .padStart(2, "0");
+    const s = Math.floor(totalSec % 60)
+      .toString()
+      .padStart(2, "0");
+    return `${h}:${m}:${s}`;
+  };
+
+  const EndInfo = useMemo(() => {
+    if (!endTime) return null;
+    return (
+      <Text style={styles.meta}>
+        Ends at {dayjs(endTime).format("ddd, MMM D • h:mm A")}
+      </Text>
+    );
+  }, [endTime, tick]);
+
+  const handleEndFastConfirm = () => {
+    Alert.alert(
+      "End fast?",
+      "Are you sure you want to end your current fast?",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "End Fast", style: "destructive", onPress: () => onEndFast() },
+      ],
+      { cancelable: true }
+    );
+  };
+
+  return (
+    <View style={{ width: "100%" }}>
+      <TimerCard
+        label="Remaining"
+        value={fmt(remainingMs)}
+        sublabel={EndInfo}
+      />
+      <TimerCard label="Elapsed" value={fmt(elapsedMs)} light />
+
+      {/* Only End Fast (with confirmation) */}
+      <View style={{ width: "100%", marginTop: 10 }}>
+        <DangerButton title="End Fast" onPress={handleEndFastConfirm} />
+      </View>
+    </View>
+  );
+}
+
 export default function App() {
   const {
     isFasting,
     startTime,
     endTime,
-    durationHours, // from your hook
-    startFast, // supports startFast(hours, startIso?) if you updated it
+    durationHours,
+    startFast,
     endFast,
-    // extendFast,   // not used anymore (you asked to remove add-time buttons)
     resetAll,
 
-    // These may not exist if you didn't add history yet; we guard against that:
+    // If you added history in your hook these will exist; otherwise we show a placeholder.
     history,
     stats,
     clearHistory,
   } = useFastingTimer();
 
-  // Local UI state
-  const [tick, setTick] = useState(0);
   const [showHistory, setShowHistory] = useState(false);
   const [modeHours, setModeHours] = useState(durationHours || 16);
-  const [startAt, setStartAt] = useState(() => new Date());
-
-  // 1s ticker for live countdown
-  useEffect(() => {
-    const id = setInterval(() => setTick((t) => t + 1), 1000);
-    return () => clearInterval(id);
-  }, []);
+  const [startAt, setStartAt] = useState(() => new Date()); // stable, no re-init each render
 
   // Ask for notification permissions once
   useEffect(() => {
@@ -73,49 +127,28 @@ export default function App() {
     })();
   }, []);
 
-  // Derived values for timers
-  const now = dayjs();
-  const remainingMs =
-    isFasting && endTime ? Math.max(0, dayjs(endTime).diff(now)) : 0;
-  const elapsedMs =
-    isFasting && startTime ? Math.max(0, now.diff(dayjs(startTime))) : 0;
+  // Optional: light validation before starting from chosen time
+  const handleStartFromChosen = useCallback(() => {
+    // If you prefer zero validation, replace this with: startFast(modeHours, startAt.toISOString());
+    const start = dayjs(startAt);
+    const end = start.add(modeHours, "hour");
+    const now = dayjs();
 
-  const fmt = (ms) => {
-    const totalSec = Math.floor(ms / 1000);
-    const h = Math.floor(totalSec / 3600)
-      .toString()
-      .padStart(2, "0");
-    const m = Math.floor((totalSec % 3600) / 60)
-      .toString()
-      .padStart(2, "0");
-    const s = Math.floor(totalSec % 60)
-      .toString()
-      .padStart(2, "0");
-    return `${h}:${m}:${s}`;
-  };
+    if (start.isAfter(now)) {
+      Alert.alert("Invalid start time", "Start time cannot be in the future.");
+      return;
+    }
+    if (!end.isAfter(now)) {
+      Alert.alert(
+        "This fast already ended",
+        "That start + duration has already passed."
+      );
+      return;
+    }
+    startFast(modeHours, start.toISOString());
+  }, [modeHours, startAt, startFast]);
 
-  const EndInfo = useMemo(() => {
-    if (!isFasting || !endTime) return null;
-    return (
-      <Text style={styles.meta}>
-        Ends at {dayjs(endTime).format("ddd, MMM D • h:mm A")}
-      </Text>
-    );
-  }, [isFasting, endTime, tick]);
-
-  // Confirm before ending a fast
-  const handleEndFastConfirm = () => {
-    Alert.alert(
-      "End fast?",
-      "Are you sure you want to end your current fast?",
-      [
-        { text: "Cancel", style: "cancel" },
-        { text: "End Fast", style: "destructive", onPress: endFast },
-      ]
-    );
-  };
-
-  // Simple safe accessors if history/stats aren't implemented yet
+  // Safe accessors if history/stats aren't implemented yet
   const hasHistoryFeature =
     Array.isArray(history) && stats && typeof stats === "object";
   const listData = hasHistoryFeature ? history : [];
@@ -153,7 +186,7 @@ export default function App() {
           </Pressable>
         </View>
 
-        {/* Content */}
+        {/* Page content */}
         {showHistory ? (
           <View style={{ width: "100%", flex: 1 }}>
             <View style={styles.statsRow}>
@@ -187,8 +220,7 @@ export default function App() {
               />
             ) : (
               <Text style={styles.placeholder}>
-                History isn’t enabled yet in your hook. I can add it when you’re
-                ready.
+                History isn’t enabled yet in your hook.
               </Text>
             )}
 
@@ -200,38 +232,26 @@ export default function App() {
               </Pressable>
             )}
           </View>
-        ) : // Timer page
-        isFasting ? (
-          <View style={{ width: "100%" }}>
-            <TimerCard
-              label="Remaining"
-              value={fmt(remainingMs)}
-              sublabel={EndInfo}
-            />
-            <TimerCard label="Elapsed" value={fmt(elapsedMs)} light />
-
-            {/* Only End Fast (with confirmation) */}
-            <View style={{ width: "100%", marginTop: 10 }}>
-              <DangerButton title="End Fast" onPress={handleEndFastConfirm} />
-            </View>
-          </View>
+        ) : isFasting ? (
+          <TimerSection
+            startTime={startTime}
+            endTime={endTime}
+            onEndFast={endFast}
+          />
         ) : (
-          // Pre-fast setup
           <View style={{ width: "100%", gap: 14 }}>
             <ModePicker value={modeHours} onChange={setModeHours} />
             <StartTimePicker value={startAt} onChange={setStartAt} />
 
             <PrimaryButton
               title={`Start ${modeHours}h fast (from chosen time)`}
-              onPress={() => startFast(modeHours, startAt.toISOString())}
+              onPress={handleStartFromChosen}
             />
-            {/*
+
+            {/* You asked to remove the white "Start now" button; leaving a commented copy for later.
             <SecondaryButton
               title="Start now (use chosen mode)"
-              onPress={() => {
-                setStartAt(new Date());
-                startFast(modeHours); // default start = now
-              }}
+              onPress={() => startFast(modeHours)}
             />
             */}
           </View>
@@ -329,7 +349,7 @@ const styles = StyleSheet.create({
   tabText: { color: "#9CA3AF", fontWeight: "700" },
   tabTextActive: { color: "white" },
 
-  // Rows & layout helpers
+  // Stats row
   statsRow: { flexDirection: "row", gap: 10, width: "100%" },
   statBox: {
     flex: 1,
@@ -339,9 +359,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   statValue: { color: "white", fontSize: 20, fontWeight: "800" },
-  statLabel: { color: "white", fontSize: 12, marginTop: 2 },
+  statLabel: { color: "white", fontSize: 12, marginTop: 2 }, // <- white per your request
 
-  // History styles (if enabled)
+  // History list
   histItem: {
     backgroundColor: "#0B1220",
     borderWidth: 1,
@@ -372,7 +392,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   btnFull: { width: "100%", alignSelf: "stretch" },
-  btnAuto: { flex: 1 }, // use when placing buttons side-by-side in a row
+  btnAuto: { flex: 1 },
   btnPrimary: { backgroundColor: "#2563EB" },
   btnSecondary: { backgroundColor: "#E5E7EB" },
   btnDanger: { backgroundColor: "#EF4444" },
@@ -380,6 +400,6 @@ const styles = StyleSheet.create({
   btnTextDark: { color: "#111111", fontWeight: "700", fontSize: 16 },
   pressed: { opacity: 0.9 },
 
-  // Meta text under Remaining card
+  // Meta
   meta: { color: "#93C5FD", marginTop: 6, textAlign: "center" },
 });
